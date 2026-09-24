@@ -1,0 +1,12 @@
+[package]
+name = "feature-flag-spec"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Validating parser and pretty printer for a feature flag definition format"
+
+[[bin]]
+name = "flagspec"
+path = "src/main.rs"
+
+[dependencies]
