@@ -326,3 +326,165 @@ fn parse_string(raw: &str, line_no: usize) -> Result<String, ParseError> {
     }
     Ok(out)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Cursor;
+
+    fn flags(src: &str) -> Vec<Result<Flag, FlagError>> {
+        FlagReader::new(Cursor::new(src.as_bytes())).collect()
+    }
+
+    fn one_err(src: &str) -> ParseError {
+        let mut results = flags(src);
+        assert_eq!(results.len(), 1, "expected exactly one result from {:?}", src);
+        match results.pop().unwrap() {
+            Err(FlagError::Parse(e)) => e,
+            other => panic!("expected a parse error, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn valid_flag_parses() {
+        let src = "flag search.v2 {\n    enabled = true\n}\n";
+        let results = flags(src);
+        assert_eq!(results.len(), 1);
+        let flag = results.into_iter().next().unwrap().unwrap();
+        assert_eq!(flag.name, "search.v2");
+        assert!(flag.enabled);
+        assert!(flag.rules.is_empty());
+    }
+
+    #[test]
+    fn comments_and_blank_lines_are_skipped() {
+        let src = "# a comment\n\nflag a {\n    # another comment\n    enabled = true\n\n}\n";
+        let results = flags(src);
+        assert_eq!(results.len(), 1);
+        assert!(results.into_iter().next().unwrap().is_ok());
+    }
+
+    #[test]
+    fn missing_flag_keyword() {
+        let e = one_err("not a flag header\n");
+        assert_eq!(e.line, 1);
+        assert!(e.message.contains("expected 'flag <name> {'"));
+    }
+
+    #[test]
+    fn missing_opening_brace() {
+        let e = one_err("flag no_brace\n    enabled = true\n}\n");
+        assert_eq!(e.line, 1);
+        assert!(e.message.contains("expected '{'"));
+    }
+
+    #[test]
+    fn empty_name_rejected() {
+        let e = one_err("flag {\n    enabled = true\n}\n");
+        assert_eq!(e.line, 1);
+        assert!(e.message.contains("must not be empty"));
+    }
+
+    #[test]
+    fn name_must_start_with_letter() {
+        let e = one_err("flag 1abc {\n    enabled = true\n}\n");
+        assert!(e.message.contains("must start with a letter"));
+    }
+
+    #[test]
+    fn name_rejects_invalid_characters() {
+        let e = one_err("flag bad@name {\n    enabled = true\n}\n");
+        assert!(e.message.contains("invalid characters"));
+    }
+
+    #[test]
+    fn unterminated_block() {
+        let e = one_err("flag a {\n    enabled = true\n");
+        assert!(e.message.contains("unterminated flag block"));
+    }
+
+    #[test]
+    fn missing_enabled_field() {
+        let e = one_err("flag a {\n    description = \"x\"\n}\n");
+        assert!(e.message.contains("missing required field 'enabled'"));
+    }
+
+    #[test]
+    fn unknown_field_rejected() {
+        let e = one_err("flag a {\n    enabled = true\n    bogus = true\n}\n");
+        assert_eq!(e.line, 3);
+        assert!(e.message.contains("unknown field 'bogus'"));
+    }
+
+    #[test]
+    fn line_without_equals_or_rule() {
+        let e = one_err("flag a {\n    enabled = true\n    just some text\n}\n");
+        assert!(e.message.contains("cannot parse line"));
+    }
+
+    #[test]
+    fn rollout_must_be_an_integer() {
+        let e = one_err("flag a {\n    enabled = true\n    rollout = high\n}\n");
+        assert!(e.message.contains("must be an integer"));
+    }
+
+    #[test]
+    fn rollout_out_of_range() {
+        let e = one_err("flag a {\n    enabled = true\n    rollout = 150\n}\n");
+        assert!(e.message.contains("between 0 and 100"));
+    }
+
+    #[test]
+    fn bad_bool_value() {
+        let e = one_err("flag a {\n    enabled = yes\n}\n");
+        assert!(e.message.contains("expected 'true' or 'false'"));
+    }
+
+    #[test]
+    fn rule_without_arrow() {
+        let e = one_err("flag a {\n    enabled = true\n    rule region == \"eu\"\n}\n");
+        assert!(e.message.contains("must contain '=>'"));
+    }
+
+    #[test]
+    fn rule_without_comparison_operator() {
+        let e = one_err("flag a {\n    enabled = true\n    rule region \"eu\" => true\n}\n");
+        assert!(e.message.contains("must use '==' or '!='"));
+    }
+
+    #[test]
+    fn rule_with_empty_field_name() {
+        let e = one_err("flag a {\n    enabled = true\n    rule  == \"eu\" => true\n}\n");
+        assert!(e.message.contains("field name must not be empty"));
+    }
+
+    #[test]
+    fn unterminated_string() {
+        let e = one_err("flag a {\n    description = \"unterminated\n    enabled = true\n}\n");
+        assert!(e.message.contains("expected a quoted string"));
+    }
+
+    #[test]
+    fn unknown_escape_sequence() {
+        let e = one_err("flag a {\n    description = \"bad \\q escape\"\n    enabled = true\n}\n");
+        assert!(e.message.contains("unknown escape sequence"));
+    }
+
+    #[test]
+    fn dangling_escape() {
+        let e = one_err("flag a {\n    description = \"trailing\\\"\n    enabled = true\n}\n");
+        assert!(e.message.contains("dangling escape"));
+    }
+
+    #[test]
+    fn error_reports_correct_line_number_across_blocks() {
+        let src = "flag a {\n    enabled = true\n}\nflag b {\n    enabled = nope\n}\n";
+        let mut results = flags(src);
+        assert_eq!(results.len(), 2);
+        assert!(results.remove(0).is_ok());
+        match results.remove(0) {
+            Err(FlagError::Parse(e)) => assert_eq!(e.line, 5),
+            other => panic!("expected parse error, got {:?}", other),
+        }
+    }
+}
